@@ -7,6 +7,8 @@
 
 #include "lexer.h"
 #include "token.h"
+#include "parser.h"
+#include "expand.h"
 
 static void print_history(void)
 {
@@ -38,24 +40,20 @@ int main(void)
     {
         line = readline("shellforge$ ");
 
-        /* Ctrl+D */
         if (line == NULL)
         {
             printf("\nGoodbye!\n");
             break;
         }
 
-        /* Ignore empty input */
         if (strlen(line) == 0)
         {
             free(line);
             continue;
         }
 
-        /* Save command in history */
         add_history(line);
 
-        /* Exit */
         if (strcmp(line, "exit") == 0)
         {
             free(line);
@@ -63,7 +61,6 @@ int main(void)
             break;
         }
 
-        /* History */
         if (strcmp(line, "history") == 0)
         {
             print_history();
@@ -71,13 +68,34 @@ int main(void)
             continue;
         }
 
-        /* Tokenize command */
         token_list_t tokens;
 
-        if (lexer(line, &tokens) == 0)
+        if (lexer(line, &tokens) != 0)
         {
-            token_print(&tokens);
+            free(line);
+            continue;
         }
+
+        token_print(&tokens);
+
+        pipeline_t pipeline;
+
+        if (parse(&tokens, &pipeline) != 0)
+        {
+            free(line);
+            continue;
+        }
+
+        if (expand_variables(&pipeline) != 0)
+        {
+            pipeline_free(&pipeline);
+            free(line);
+            continue;
+        }
+
+        pipeline_print(&pipeline);
+
+        pipeline_free(&pipeline);
 
         free(line);
     }
