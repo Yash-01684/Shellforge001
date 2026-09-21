@@ -1,14 +1,34 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include <readline/history.h>
 #include <readline/readline.h>
 
+#include "lexer.h"
+#include "token.h"
+
+static void print_history(void)
+{
+    HIST_ENTRY **entries = history_list();
+
+    printf("\n----------- Command History -----------\n");
+
+    if (entries != NULL)
+    {
+        for (int i = 0; entries[i] != NULL; i++)
+        {
+            printf("%d  %s\n", i + 1, entries[i]->line);
+        }
+    }
+
+    printf("---------------------------------------\n");
+}
+
 int main(void)
 {
-    /* Display a welcome banner when the shell starts */
     printf("=====================================\n");
-    printf("          Welcome to Shellforge\n");
+    printf("             Shellforge\n");
     printf("      A Unix Style Shell written in C\n");
     printf("=====================================\n");
 
@@ -18,7 +38,7 @@ int main(void)
     {
         line = readline("shellforge$ ");
 
-        /* Handle Ctrl+D / EOF */
+        /* Ctrl+D */
         if (line == NULL)
         {
             printf("\nGoodbye!\n");
@@ -32,10 +52,10 @@ int main(void)
             continue;
         }
 
-        /* Store command in readline history */
+        /* Save command in history */
         add_history(line);
 
-        /* Exit command */
+        /* Exit */
         if (strcmp(line, "exit") == 0)
         {
             free(line);
@@ -43,8 +63,21 @@ int main(void)
             break;
         }
 
-        /* Display what the user entered */
-        printf("YOU ENTERED : %s\n", line);
+        /* History */
+        if (strcmp(line, "history") == 0)
+        {
+            print_history();
+            free(line);
+            continue;
+        }
+
+        /* Tokenize command */
+        token_list_t tokens;
+
+        if (lexer(line, &tokens) == 0)
+        {
+            token_print(&tokens);
+        }
 
         free(line);
     }
