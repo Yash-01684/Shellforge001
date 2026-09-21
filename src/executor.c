@@ -10,8 +10,9 @@
 #include <unistd.h>
 
 #include "executor.h"
+#include "builtin.h"
 
-static void apply_redirections(command_t *command)
+static int apply_redirections(command_t *command)
 {
     int fd;
 
@@ -22,14 +23,14 @@ static void apply_redirections(command_t *command)
         if (fd < 0)
         {
             perror(command->input);
-            exit(EXIT_FAILURE);
+            return -1;
         }
 
         if (dup2(fd, STDIN_FILENO) < 0)
         {
             perror("dup2");
             close(fd);
-            exit(EXIT_FAILURE);
+            return -1;
         }
 
         close(fd);
@@ -53,24 +54,24 @@ static void apply_redirections(command_t *command)
         if (fd < 0)
         {
             perror(command->output);
-            exit(EXIT_FAILURE);
+            return -1;
         }
 
         if (dup2(fd, STDOUT_FILENO) < 0)
         {
             perror("dup2");
             close(fd);
-            exit(EXIT_FAILURE);
+            return -1;
         }
 
         close(fd);
     }
+
+    return 0;
 }
 
-static void execute_command(command_t *command)
+static int execute_external(command_t *command)
 {
-    apply_redirections(command);
-
     execvp(command->argv[0], command->argv);
 
     fprintf(stderr,
@@ -78,18 +79,155 @@ static void execute_command(command_t *command)
             command->argv[0],
             strerror(errno));
 
-    exit(127);
+    return 127;
+}
+
+static int execute_child(command_t *command)
+{
+    int result;
+
+    if (apply_redirections(command) != 0)
+    {
+        return 1;
+    }
+
+    result = builtin_execute(command);
+
+    if (result == BUILTIN_HANDLED)
+    {
+        return 0;
+    }
+
+    if (result == BUILTIN_EXIT)
+    {
+        return 0;
+    }
+
+    return execute_external(command);
+}
+
+static int execute_single_builtin(command_t *command)
+{
+    int saved_stdin = -1;
+    int saved_stdout = -1;
+    int result;
+
+    if (strcmp(command->argv[0], "cd") != 0 &&
+        strcmp(command->argv[0], "pwd") != 0 &&
+        strcmp(command->argv[0], "echo") != 0 &&
+        strcmp(command->argv[0], "exit") != 0)
+    {
+        return BUILTIN_NOT_FOUND;
+    }
+
+    saved_stdin = dup(STDIN_FILENO);
+    saved_stdout = dup(STDOUT_FILENO);
+
+    if (saved_stdin < 0 || saved_stdout < 0)
+    {
+        perror("dup");
+        return 1;
+    }
+
+    if (apply_redirections(command) != 0)
+    {
+        dup2(saved_stdin, STDIN_FILENO);
+        dup2(saved_stdout, STDOUT_FILENO);
+
+        close(saved_stdin);
+        close(saved_stdout);
+
+        return 1;
+    }
+
+    result = builtin_execute(command);
+
+    fflush(stdout);
+    fflush(stderr);
+
+    dup2(saved_stdin, STDIN_FILENO);
+    dup2(saved_stdout, STDOUT_FILENO);
+
+    close(saved_stdin);
+    close(saved_stdout);
+
+    return result;
+}
+
+static int execute_one_command(command_t *command)
+{
+    pid_t pid;
+    int status;
+
+    if (!command->background)
+    {
+        int builtin_result = execute_single_builtin(command);
+
+        if (builtin_result != BUILTIN_NOT_FOUND)
+        {
+            if (builtin_result == BUILTIN_EXIT)
+            {
+                return EXECUTOR_EXIT;
+            }
+
+            return 0;
+        }
+    }
+
+    pid = fork();
+
+    if (pid < 0)
+    {
+        perror("fork");
+        return 1;
+    }
+
+    if (pid == 0)
+    {
+        int result = execute_child(command);
+        _exit(result);
+    }
+
+    if (command->background)
+    {
+        printf("[background pid %d]\n", pid);
+        return 0;
+    }
+
+    if (waitpid(pid, &status, 0) < 0)
+    {
+        perror("waitpid");
+        return 1;
+    }
+
+    if (WIFEXITED(status))
+    {
+        return WEXITSTATUS(status);
+    }
+
+    if (WIFSIGNALED(status))
+    {
+        return 128 + WTERMSIG(status);
+    }
+
+    return 1;
 }
 
 int execute_pipeline(pipeline_t *pipeline)
 {
     if (pipeline == NULL || pipeline->command_count <= 0)
     {
-        return -1;
+        return 1;
     }
 
-    int previous_pipe_read = -1;
+    if (pipeline->command_count == 1)
+    {
+        return execute_one_command(&pipeline->commands[0]);
+    }
+
+    int previous_read = -1;
     pid_t pids[MAX_COMMANDS];
+    int last_status = 0;
 
     for (int i = 0; i < pipeline->command_count; i++)
     {
@@ -101,12 +239,12 @@ int execute_pipeline(pipeline_t *pipeline)
             {
                 perror("pipe");
 
-                if (previous_pipe_read != -1)
+                if (previous_read != -1)
                 {
-                    close(previous_pipe_read);
+                    close(previous_read);
                 }
 
-                return -1;
+                return 1;
             }
         }
 
@@ -116,9 +254,9 @@ int execute_pipeline(pipeline_t *pipeline)
         {
             perror("fork");
 
-            if (previous_pipe_read != -1)
+            if (previous_read != -1)
             {
-                close(previous_pipe_read);
+                close(previous_read);
             }
 
             if (pipefd[0] != -1)
@@ -131,20 +269,20 @@ int execute_pipeline(pipeline_t *pipeline)
                 close(pipefd[1]);
             }
 
-            return -1;
+            return 1;
         }
 
         if (pid == 0)
         {
-            if (previous_pipe_read != -1)
+            if (previous_read != -1)
             {
-                if (dup2(previous_pipe_read, STDIN_FILENO) < 0)
+                if (dup2(previous_read, STDIN_FILENO) < 0)
                 {
                     perror("dup2");
-                    exit(EXIT_FAILURE);
+                    _exit(1);
                 }
 
-                close(previous_pipe_read);
+                close(previous_read);
             }
 
             if (pipefd[1] != -1)
@@ -152,7 +290,7 @@ int execute_pipeline(pipeline_t *pipeline)
                 if (dup2(pipefd[1], STDOUT_FILENO) < 0)
                 {
                     perror("dup2");
-                    exit(EXIT_FAILURE);
+                    _exit(1);
                 }
 
                 close(pipefd[1]);
@@ -163,14 +301,16 @@ int execute_pipeline(pipeline_t *pipeline)
                 close(pipefd[0]);
             }
 
-            execute_command(&pipeline->commands[i]);
+            int result = execute_child(&pipeline->commands[i]);
+
+            _exit(result);
         }
 
         pids[i] = pid;
 
-        if (previous_pipe_read != -1)
+        if (previous_read != -1)
         {
-            close(previous_pipe_read);
+            close(previous_read);
         }
 
         if (pipefd[1] != -1)
@@ -178,21 +318,36 @@ int execute_pipeline(pipeline_t *pipeline)
             close(pipefd[1]);
         }
 
-        previous_pipe_read = pipefd[0];
+        previous_read = pipefd[0];
     }
 
-    if (previous_pipe_read != -1)
+    if (previous_read != -1)
     {
-        close(previous_pipe_read);
+        close(previous_read);
     }
 
-    if (!pipeline->commands[pipeline->command_count - 1].background)
+    for (int i = 0; i < pipeline->command_count; i++)
     {
-        for (int i = 0; i < pipeline->command_count; i++)
+        int status;
+
+        if (waitpid(pids[i], &status, 0) < 0)
         {
-            waitpid(pids[i], NULL, 0);
+            perror("waitpid");
+            continue;
+        }
+
+        if (i == pipeline->command_count - 1)
+        {
+            if (WIFEXITED(status))
+            {
+                last_status = WEXITSTATUS(status);
+            }
+            else if (WIFSIGNALED(status))
+            {
+                last_status = 128 + WTERMSIG(status);
+            }
         }
     }
 
-    return 0;
+    return last_status;
 }
