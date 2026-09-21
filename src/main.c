@@ -10,6 +10,7 @@
 #include "parser.h"
 #include "expand.h"
 #include "builtin.h"
+#include "executor.h"
 
 static void print_history(void)
 {
@@ -35,11 +36,9 @@ int main(void)
     printf("      A Unix Style Shell written in C\n");
     printf("=====================================\n");
 
-    char *line;
-
     while (1)
     {
-        line = readline("shellforge$ ");
+        char *line = readline("shellforge$ ");
 
         if (line == NULL)
         {
@@ -70,8 +69,6 @@ int main(void)
             continue;
         }
 
-        token_print(&tokens);
-
         pipeline_t pipeline;
 
         if (parse(&tokens, &pipeline) != 0)
@@ -87,21 +84,18 @@ int main(void)
             continue;
         }
 
-        pipeline_print(&pipeline);
-
         if (pipeline.command_count == 1)
         {
-            int builtin_result =
-                builtin_execute(&pipeline.commands[0]);
+            int result = builtin_execute(&pipeline.commands[0]);
 
-            if (builtin_result == BUILTIN_EXIT)
+            if (result == BUILTIN_EXIT)
             {
                 pipeline_free(&pipeline);
                 free(line);
                 break;
             }
 
-            if (builtin_result == BUILTIN_HANDLED)
+            if (result == BUILTIN_HANDLED)
             {
                 pipeline_free(&pipeline);
                 free(line);
@@ -109,7 +103,7 @@ int main(void)
             }
         }
 
-        printf("Command execution is not implemented yet.\n");
+        execute_pipeline(&pipeline);
 
         pipeline_free(&pipeline);
         free(line);
