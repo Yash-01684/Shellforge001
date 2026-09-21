@@ -9,6 +9,7 @@
 #include "token.h"
 #include "parser.h"
 #include "expand.h"
+#include "builtin.h"
 
 static void print_history(void)
 {
@@ -54,13 +55,6 @@ int main(void)
 
         add_history(line);
 
-        if (strcmp(line, "exit") == 0)
-        {
-            free(line);
-            printf("Exiting...\n");
-            break;
-        }
-
         if (strcmp(line, "history") == 0)
         {
             print_history();
@@ -95,8 +89,29 @@ int main(void)
 
         pipeline_print(&pipeline);
 
-        pipeline_free(&pipeline);
+        if (pipeline.command_count == 1)
+        {
+            int builtin_result =
+                builtin_execute(&pipeline.commands[0]);
 
+            if (builtin_result == BUILTIN_EXIT)
+            {
+                pipeline_free(&pipeline);
+                free(line);
+                break;
+            }
+
+            if (builtin_result == BUILTIN_HANDLED)
+            {
+                pipeline_free(&pipeline);
+                free(line);
+                continue;
+            }
+        }
+
+        printf("Command execution is not implemented yet.\n");
+
+        pipeline_free(&pipeline);
         free(line);
     }
 
