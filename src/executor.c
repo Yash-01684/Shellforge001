@@ -264,10 +264,6 @@ static int execute_one_command(command_t *command)
 
     if (pid == 0)
     {
-        /*
-         * Background commands get their own process group.
-         * This is required for proper job control.
-         */
         if (command->background)
         {
             if (setpgid(0, 0) < 0)
@@ -283,11 +279,6 @@ static int execute_one_command(command_t *command)
 
     if (command->background)
     {
-        /*
-         * Make the child its own process-group leader.
-         * Calling this in the parent as well avoids a race with
-         * the child calling setpgid().
-         */
         if (setpgid(pid, pid) < 0 && errno != EACCES)
         {
             perror("setpgid");
@@ -354,6 +345,14 @@ int execute_pipeline(pipeline_t *pipeline)
         return 1;
     }
 
+    /*
+     * The parser stores '&' on the final command of a pipeline.
+     * Treat the entire pipeline as a background job when the
+     * final command has the background flag.
+     */
+    int pipeline_background =
+        pipeline->commands[pipeline->command_count - 1].background;
+
     if (pipeline->command_count == 1)
     {
         return execute_one_command(
@@ -411,19 +410,10 @@ int execute_pipeline(pipeline_t *pipeline)
 
         if (pid == 0)
         {
-            /*
-             * Put every process in a background pipeline into
-             * the same process group.
-             */
-            if (pipeline->commands[i].background)
+            if (pipeline_background)
             {
                 if (pipeline_pgid == 0)
                 {
-                    /*
-                     * The first process becomes the process-group
-                     * leader. Its PID is known from the parent,
-                     * but the child can use its own PID.
-                     */
                     if (setpgid(0, 0) < 0)
                     {
                         perror("setpgid");
@@ -476,7 +466,7 @@ int execute_pipeline(pipeline_t *pipeline)
 
         pids[i] = pid;
 
-        if (pipeline->commands[i].background)
+        if (pipeline_background)
         {
             if (pipeline_pgid == 0)
             {
@@ -510,10 +500,10 @@ int execute_pipeline(pipeline_t *pipeline)
 
     /*
      * Background pipeline:
-     * add the complete pipeline as one job and immediately
-     * return to the shell prompt.
+     * register the entire pipeline as one job and return
+     * immediately to the Shellforge prompt.
      */
-    if (pipeline->commands[0].background)
+    if (pipeline_background)
     {
         char job_command[1024];
 

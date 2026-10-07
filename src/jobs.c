@@ -13,6 +13,7 @@
 
 static job_t job_table[MAX_JOBS];
 static int job_count = 0;
+static int next_job_id = 1;
 static pid_t current_fg_pgid = 0;
 
 static void handle_sigint(int sig)
@@ -38,7 +39,9 @@ static void handle_sigtstp(int sig)
 void jobs_init(void)
 {
     memset(job_table, 0, sizeof(job_table));
+
     job_count = 0;
+    next_job_id = 1;
     current_fg_pgid = 0;
 
     signal(SIGTTOU, SIG_IGN);
@@ -51,13 +54,17 @@ job_t *job_add(pid_t pgid, const char *command, job_state_t state)
 {
     if (job_count >= MAX_JOBS)
     {
-        fprintf(stderr, "shellforge: maximum number of jobs reached\n");
+        fprintf(
+            stderr,
+            "shellforge: maximum number of jobs reached\n"
+        );
+
         return NULL;
     }
 
     job_t *job = &job_table[job_count];
 
-    job->id = job_count + 1;
+    job->id = next_job_id++;
     job->pgid = pgid;
     job->state = state;
 
@@ -163,9 +170,11 @@ void jobs_update_status(void)
     int status;
     pid_t pid;
 
-    while ((pid = waitpid(-1,
-                          &status,
-                          WNOHANG | WUNTRACED | WCONTINUED)) > 0)
+    while ((pid = waitpid(
+                -1,
+                &status,
+                WNOHANG | WUNTRACED | WCONTINUED
+            )) > 0)
     {
         job_t *job = job_find_by_pgid(pid);
 
@@ -180,7 +189,7 @@ void jobs_update_status(void)
         }
         else if (WIFCONTINUED(status))
         {
-            job_continue(job);
+            job->state = JOB_RUNNING;
         }
         else if (WIFEXITED(status) || WIFSIGNALED(status))
         {
@@ -199,9 +208,11 @@ void jobs_print(void)
 
         if (job->state == JOB_DONE)
         {
-            printf("[%d]  Done      %s\n",
-                   job->id,
-                   job->command);
+            printf(
+                "[%d]  Done      %s\n",
+                job->id,
+                job->command
+            );
 
             free(job->command);
 
@@ -217,15 +228,19 @@ void jobs_print(void)
 
         if (job->state == JOB_RUNNING)
         {
-            printf("[%d]  Running   %s\n",
-                   job->id,
-                   job->command);
+            printf(
+                "[%d]  Running   %s\n",
+                job->id,
+                job->command
+            );
         }
         else if (job->state == JOB_STOPPED)
         {
-            printf("[%d]  Stopped   %s\n",
-                   job->id,
-                   job->command);
+            printf(
+                "[%d]  Stopped   %s\n",
+                job->id,
+                job->command
+            );
         }
 
         i++;
@@ -299,7 +314,12 @@ int fg_command(int job_id)
 
     if (job == NULL)
     {
-        fprintf(stderr, "fg: no such job: %d\n", job_id);
+        fprintf(
+            stderr,
+            "fg: no such job: %d\n",
+            job_id
+        );
+
         return 1;
     }
 
@@ -329,7 +349,11 @@ int fg_command(int job_id)
 
     int status;
 
-    while (waitpid(-job->pgid, &status, WUNTRACED) > 0)
+    while (waitpid(
+               -job->pgid,
+               &status,
+               WUNTRACED
+           ) > 0)
     {
         if (WIFSTOPPED(status))
         {
@@ -346,7 +370,10 @@ int fg_command(int job_id)
 
     set_foreground_pgid(0);
 
-    if (tcsetpgrp(STDIN_FILENO, getpgrp()) < 0)
+    if (tcsetpgrp(
+            STDIN_FILENO,
+            getpgrp()
+        ) < 0)
     {
         perror("tcsetpgrp");
     }
@@ -383,7 +410,12 @@ int bg_command(int job_id)
 
     if (job == NULL)
     {
-        fprintf(stderr, "bg: no such job: %d\n", job_id);
+        fprintf(
+            stderr,
+            "bg: no such job: %d\n",
+            job_id
+        );
+
         return 1;
     }
 
@@ -401,9 +433,11 @@ int bg_command(int job_id)
 
     job->state = JOB_RUNNING;
 
-    printf("[%d] %s &\n",
-           job->id,
-           job->command);
+    printf(
+        "[%d] %s &\n",
+        job->id,
+        job->command
+    );
 
     return 0;
 }
