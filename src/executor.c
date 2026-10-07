@@ -98,11 +98,22 @@ static int execute_child(command_t *command)
 
     if (result == BUILTIN_HANDLED)
     {
+        /*
+         * Builtins such as echo may use stdio buffering.
+         * Flush before _exit(), because _exit() does not flush
+         * stdio buffers.
+         */
+        fflush(stdout);
+        fflush(stderr);
+
         return 0;
     }
 
     if (result == BUILTIN_EXIT)
     {
+        fflush(stdout);
+        fflush(stderr);
+
         return 0;
     }
 
@@ -274,6 +285,15 @@ static int execute_one_command(command_t *command)
         }
 
         int result = execute_child(command);
+
+        /*
+         * execute_child() flushes builtin output before returning.
+         * fflush() here also protects normal stdio output before
+         * the child terminates.
+         */
+        fflush(stdout);
+        fflush(stderr);
+
         _exit(result);
     }
 
@@ -460,6 +480,14 @@ int execute_pipeline(pipeline_t *pipeline)
             int result = execute_child(
                 &pipeline->commands[i]
             );
+
+            /*
+             * Critical for builtin commands inside pipelines:
+             * _exit() bypasses stdio flushing, so make sure all
+             * buffered builtin output reaches the pipe first.
+             */
+            fflush(stdout);
+            fflush(stderr);
 
             _exit(result);
         }
