@@ -11,6 +11,7 @@
 
 #include "executor.h"
 #include "builtin.h"
+#include "jobs.h"
 
 static int apply_redirections(command_t *command)
 {
@@ -74,10 +75,12 @@ static int execute_external(command_t *command)
 {
     execvp(command->argv[0], command->argv);
 
-    fprintf(stderr,
-            "shellforge: %s: %s\n",
-            command->argv[0],
-            strerror(errno));
+    fprintf(
+        stderr,
+        "shellforge: %s: %s\n",
+        command->argv[0],
+        strerror(errno)
+    );
 
     return 127;
 }
@@ -154,6 +157,83 @@ static int execute_single_builtin(command_t *command)
     return result;
 }
 
+static void build_job_command(
+    pipeline_t *pipeline,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    if (buffer == NULL || buffer_size == 0)
+    {
+        return;
+    }
+
+    buffer[0] = '\0';
+
+    size_t used = 0;
+
+    for (int i = 0; i < pipeline->command_count; i++)
+    {
+        command_t *command = &pipeline->commands[i];
+
+        for (int j = 0; command->argv[j] != NULL; j++)
+        {
+            if (used > 0)
+            {
+                if (used + 1 >= buffer_size)
+                {
+                    return;
+                }
+
+                buffer[used++] = ' ';
+                buffer[used] = '\0';
+            }
+
+            size_t remaining = buffer_size - used;
+
+            int written = snprintf(
+                buffer + used,
+                remaining,
+                "%s",
+                command->argv[j]
+            );
+
+            if (written < 0)
+            {
+                return;
+            }
+
+            if ((size_t)written >= remaining)
+            {
+                buffer[buffer_size - 1] = '\0';
+                return;
+            }
+
+            used += (size_t)written;
+        }
+
+        if (i < pipeline->command_count - 1)
+        {
+            if (used + 3 >= buffer_size)
+            {
+                return;
+            }
+
+            buffer[used++] = ' ';
+            buffer[used++] = '|';
+            buffer[used++] = ' ';
+            buffer[used] = '\0';
+        }
+    }
+
+    if (used + 2 < buffer_size)
+    {
+        buffer[used++] = ' ';
+        buffer[used++] = '&';
+        buffer[used] = '\0';
+    }
+}
+
 static int execute_one_command(command_t *command)
 {
     pid_t pid;
@@ -184,13 +264,67 @@ static int execute_one_command(command_t *command)
 
     if (pid == 0)
     {
+        /*
+         * Background commands get their own process group.
+         * This is required for proper job control.
+         */
+        if (command->background)
+        {
+            if (setpgid(0, 0) < 0)
+            {
+                perror("setpgid");
+                _exit(1);
+            }
+        }
+
         int result = execute_child(command);
         _exit(result);
     }
 
     if (command->background)
     {
-        printf("[background pid %d]\n", pid);
+        /*
+         * Make the child its own process-group leader.
+         * Calling this in the parent as well avoids a race with
+         * the child calling setpgid().
+         */
+        if (setpgid(pid, pid) < 0 && errno != EACCES)
+        {
+            perror("setpgid");
+        }
+
+        char job_command[1024];
+
+        snprintf(
+            job_command,
+            sizeof(job_command),
+            "%s &",
+            command->argv[0]
+        );
+
+        job_t *job = job_add(
+            pid,
+            job_command,
+            JOB_RUNNING
+        );
+
+        if (job != NULL)
+        {
+            printf(
+                "[%d] %d %s\n",
+                job->id,
+                pid,
+                job_command
+            );
+        }
+        else
+        {
+            printf(
+                "[background pid %d]\n",
+                pid
+            );
+        }
+
         return 0;
     }
 
@@ -222,12 +356,15 @@ int execute_pipeline(pipeline_t *pipeline)
 
     if (pipeline->command_count == 1)
     {
-        return execute_one_command(&pipeline->commands[0]);
+        return execute_one_command(
+            &pipeline->commands[0]
+        );
     }
 
     int previous_read = -1;
     pid_t pids[MAX_COMMANDS];
     int last_status = 0;
+    pid_t pipeline_pgid = 0;
 
     for (int i = 0; i < pipeline->command_count; i++)
     {
@@ -274,6 +411,35 @@ int execute_pipeline(pipeline_t *pipeline)
 
         if (pid == 0)
         {
+            /*
+             * Put every process in a background pipeline into
+             * the same process group.
+             */
+            if (pipeline->commands[i].background)
+            {
+                if (pipeline_pgid == 0)
+                {
+                    /*
+                     * The first process becomes the process-group
+                     * leader. Its PID is known from the parent,
+                     * but the child can use its own PID.
+                     */
+                    if (setpgid(0, 0) < 0)
+                    {
+                        perror("setpgid");
+                        _exit(1);
+                    }
+                }
+                else
+                {
+                    if (setpgid(0, pipeline_pgid) < 0)
+                    {
+                        perror("setpgid");
+                        _exit(1);
+                    }
+                }
+            }
+
             if (previous_read != -1)
             {
                 if (dup2(previous_read, STDIN_FILENO) < 0)
@@ -301,12 +467,28 @@ int execute_pipeline(pipeline_t *pipeline)
                 close(pipefd[0]);
             }
 
-            int result = execute_child(&pipeline->commands[i]);
+            int result = execute_child(
+                &pipeline->commands[i]
+            );
 
             _exit(result);
         }
 
         pids[i] = pid;
+
+        if (pipeline->commands[i].background)
+        {
+            if (pipeline_pgid == 0)
+            {
+                pipeline_pgid = pid;
+            }
+
+            if (setpgid(pid, pipeline_pgid) < 0 &&
+                errno != EACCES)
+            {
+                perror("setpgid");
+            }
+        }
 
         if (previous_read != -1)
         {
@@ -326,6 +508,50 @@ int execute_pipeline(pipeline_t *pipeline)
         close(previous_read);
     }
 
+    /*
+     * Background pipeline:
+     * add the complete pipeline as one job and immediately
+     * return to the shell prompt.
+     */
+    if (pipeline->commands[0].background)
+    {
+        char job_command[1024];
+
+        build_job_command(
+            pipeline,
+            job_command,
+            sizeof(job_command)
+        );
+
+        job_t *job = job_add(
+            pipeline_pgid,
+            job_command,
+            JOB_RUNNING
+        );
+
+        if (job != NULL)
+        {
+            printf(
+                "[%d] %d %s\n",
+                job->id,
+                pipeline_pgid,
+                job_command
+            );
+        }
+        else
+        {
+            printf(
+                "[background pid %d]\n",
+                pipeline_pgid
+            );
+        }
+
+        return 0;
+    }
+
+    /*
+     * Foreground pipeline.
+     */
     for (int i = 0; i < pipeline->command_count; i++)
     {
         int status;

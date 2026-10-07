@@ -10,23 +10,8 @@
 #include "parser.h"
 #include "expand.h"
 #include "executor.h"
-
-static void print_history(void)
-{
-    HIST_ENTRY **entries = history_list();
-
-    printf("\n----------- Command History -----------\n");
-
-    if (entries != NULL)
-    {
-        for (int i = 0; entries[i] != NULL; i++)
-        {
-            printf("%d  %s\n", i + 1, entries[i]->line);
-        }
-    }
-
-    printf("---------------------------------------\n");
-}
+#include "history.h"
+#include "jobs.h"
 
 int main(void)
 {
@@ -35,8 +20,12 @@ int main(void)
     printf("      A Unix Style Shell written in C\n");
     printf("=====================================\n");
 
+    jobs_init();
+
     while (1)
     {
+        jobs_update_status();
+
         char *line = readline("shellforge$ ");
 
         if (line == NULL)
@@ -56,6 +45,13 @@ int main(void)
         if (strcmp(line, "history") == 0)
         {
             print_history();
+            free(line);
+            continue;
+        }
+
+        if (strcmp(line, "jobs") == 0)
+        {
+            jobs_print();
             free(line);
             continue;
         }
